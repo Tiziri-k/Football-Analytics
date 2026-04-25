@@ -1,0 +1,6 @@
+env/
+node_modules/
+*.avi
+*.mp4
+*.pt
+runs/
