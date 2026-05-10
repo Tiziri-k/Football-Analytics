@@ -3,6 +3,7 @@ import supervision as sv
 import cv2
 import numpy as np
 import sys
+import pandas as pd
 
 sys.path.append('../')
 from utils import get_center_of_box, get_bbox_width
@@ -12,6 +13,16 @@ class Tracker:
     def __init__(self, model_path):
         self.model = YOLO(model_path)
         self.tracker = sv.ByteTrack()
+
+    def interpolate_ball_positions(self, ball_positions):
+        ball_positions = [x.get(1,{}).get('bbox',[]) for x in ball_positions]  
+        df_ball_positions = pd.DataFrame(ball_positions, columns=['x1', 'y1', 'x2', 'y2'])
+        # interpolate missing values (0s) using linear interpolation, then fill any remaining NaNs with 0
+        df_ball_positions = df_ball_positions.interpolate()
+        df_ball_positions = df_ball_positions.bfill()
+        ball_positions = [{1:{'bbox': x}} for x in df_ball_positions.to_numpy().tolist()]
+        return ball_positions
+
 
     def detect_frames(self, frames):
         """Run batched inference on a list of frames."""
@@ -102,7 +113,7 @@ class Tracker:
             # Adjust text x offset based on number of digits
             num_digits = len(str(track_id))
             x_text_offsets = {1: 12, 2: 8, 3: 3}
-            x_text = x1_rect + x_text_offsets.get(num_digits, 3)
+            x_text = x1_rect + x_text_offsets.get(num_digits, 2)
 
             cv2.putText(
                 frame,
@@ -110,7 +121,7 @@ class Tracker:
                 (x_text, y1_rect + 15),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
-                (255, 255, 255),
+                (0, 0, 0),
                 2,
                 cv2.LINE_AA
             )
@@ -133,7 +144,27 @@ class Tracker:
 
         return frame
 
-    def draw_annotations(self, video_frames, tracks):
+    
+    def draw_team_ball_control(self, frame, frame_num,team_ball_controll):
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (1350, 850), (1900, 970), (255,255,255), cv2.FILLED)
+        alpha = 0.5
+        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+        team_ball_controll_till_frame = team_ball_controll[:frame_num+1]
+        team_0_num_frames = team_ball_controll_till_frame[team_ball_controll_till_frame == 1].shape[0]
+        team_1_num_frames = team_ball_controll_till_frame[team_ball_controll_till_frame == 2].shape[0]
+        total_frames = team_0_num_frames + team_1_num_frames
+        if total_frames > 0:
+            team1 = (team_0_num_frames / total_frames) * 100
+            team2 = (team_1_num_frames / total_frames) * 100
+        else:
+            team1 = 0
+            team2 = 0
+        cv2.putText(frame, f'Team 1 Ball Control: {team1:.1f}%', (1400, 900), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 3)
+        cv2.putText(frame, f'Team 2 Ball Control: {team2:.1f}%', (1400, 950), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 3)
+        return frame
+
+    def draw_annotations(self, video_frames, tracks,team_ball_controll):
         """Annotate all frames with player, referee, and ball overlays."""
         output_frames = []
 
@@ -145,14 +176,20 @@ class Tracker:
             ball_dict = tracks['ball'][frame_num]
 
             for track_id, player in player_dict.items():
-                frame = self.draw_ellipse(frame, player['bbox'], (0, 0, 255), track_id)
-
+                color = player.get('team_color', (0, 0, 255))  # Default to red if team color not assigned
+                frame = self.draw_ellipse(frame, player['bbox'], color, track_id)
+                if player.get('has_ball'):
+                    frame = self.draw_triangle(frame, player['bbox'], (0, 0, 255))
+            
+            
             for _, referee in referee_dict.items():
                 frame = self.draw_ellipse(frame, referee['bbox'], (0, 255, 255))
 
             for _, ball in ball_dict.items():
                 frame = self.draw_triangle(frame, ball['bbox'], (0, 255, 0))
-
+            
+            # Draw team Ball Control
+            frame = self.draw_team_ball_control(frame, frame_num, team_ball_controll)
             output_frames.append(frame)
 
         return output_frames
